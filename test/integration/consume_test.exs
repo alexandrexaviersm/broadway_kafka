@@ -111,6 +111,11 @@ defmodule BroadwayKafka.ConsumerTest do
     topic = "test"
     hosts = [localhost: 9092]
 
+    config = %{
+      client_config: [],
+      hosts: hosts
+    }
+
     reset_topic(topic)
 
     {broadway_pid, messages_agent} = start_broadway()
@@ -147,7 +152,7 @@ defmodule BroadwayKafka.ConsumerTest do
       stop_broadway(broadway_pid)
     end)
 
-    {:ok, %{broadway_pid: broadway_pid, messages: messages}}
+    {:ok, %{broadway_pid: broadway_pid, messages: messages, topic: topic, config: config}}
   end
 
   test "number of processed messages = total messages ", %{messages: messages} do
@@ -169,6 +174,105 @@ defmodule BroadwayKafka.ConsumerTest do
 
   test "order of messages and offsets", %{messages: messages} do
     assert get_ordering_proplems(messages) == []
+  end
+
+  describe "BrodClient.resolve_offset/5" do
+    test "should correctly resolve offset when current_offset is :undefined based on offset_reset_policy",
+         %{topic: topic, config: config} do
+      current_offset = :undefined
+
+      offset_reset_policy_values = [:earliest, :latest]
+
+      resolved_offset_by_policies_for_each_partition =
+        for partition <- 0..2, into: %{} do
+          resolved_offset_by_policies =
+            for offset_reset_policy <- offset_reset_policy_values do
+              offset =
+                BroadwayKafka.BrodClient.resolve_offset(
+                  topic,
+                  partition,
+                  current_offset,
+                  offset_reset_policy,
+                  config
+                )
+
+              {offset_reset_policy, offset}
+            end
+
+          {partition, resolved_offset_by_policies}
+        end
+
+      # the 10_000 messages are divided into 3 partitions by the function send_messages
+      assert resolved_offset_by_policies_for_each_partition[0][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[0][:latest] == 3333
+
+      assert resolved_offset_by_policies_for_each_partition[1][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[1][:latest] == 3334
+
+      assert resolved_offset_by_policies_for_each_partition[2][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[2][:latest] == 3333
+    end
+
+    test "should return the same current_offset when current_offset is not :undefined nor :out_of_range regardless of reset_policy",
+         %{topic: topic, config: config} do
+      current_offset = :rand.uniform(3_333)
+      partition = rem(current_offset, 3)
+
+      offset_reset_policy_values = [:earliest, :latest]
+
+      resolved_offset_by_policies =
+        for offset_reset_policy <- offset_reset_policy_values do
+          offset =
+            BroadwayKafka.BrodClient.resolve_offset(
+              topic,
+              partition,
+              current_offset,
+              offset_reset_policy,
+              config
+            )
+
+          {offset_reset_policy, offset}
+        end
+
+      assert resolved_offset_by_policies[:earliest] == current_offset
+      assert resolved_offset_by_policies[:latest] == current_offset
+    end
+
+    test "should correctly resolve offset when current_offset is :out_of_range based on offset_reset_policy",
+         %{topic: topic, config: config} do
+      current_out_of_range_offset = Enum.random(20_000..30_000)
+
+      offset_reset_policy_values = [:earliest, :latest]
+
+      resolved_offset_by_policies_for_each_partition =
+        for partition <- 0..2, into: %{} do
+          resolved_offset_by_policies =
+            for offset_reset_policy <- offset_reset_policy_values do
+              offset =
+                BroadwayKafka.BrodClient.resolve_offset(
+                  topic,
+                  partition,
+                  current_out_of_range_offset,
+                  offset_reset_policy,
+                  config
+                )
+
+              {offset_reset_policy, offset}
+            end
+
+          {partition, resolved_offset_by_policies}
+        end
+
+      # the 10_000 messages are divided into 3 partitions by the function send_messages
+      assert resolved_offset_by_policies_for_each_partition[0][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[0][:latest] == 3333
+
+      assert resolved_offset_by_policies_for_each_partition[1][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[1][:latest] == 3334
+
+      assert resolved_offset_by_policies_for_each_partition[2][:earliest] == 0
+      assert resolved_offset_by_policies_for_each_partition[2][:latest] == 3333
+    end
   end
 
   defp reset_topic(topic) do
